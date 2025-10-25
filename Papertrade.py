@@ -5,15 +5,22 @@ import pytz
 from datetime import datetime
 import streamlit as st
 import plotly.graph_objects as go
-import os
-
-EXCEL_FILE = "paper_orders.xlsx"
+import json
+import gspread
+from oauth2client.service_account import ServiceAccountCredentials
 
 # ---------------- Constants ----------------
 RISK_PERCENTAGE = 0.5  # % of account per trade
 STOP_MULTIPLIER = 1.5  # ATR multiple for stop-loss
 TARGET_PCT = 0.01      # 1% profit target
 TIMEZONE = pytz.timezone("Asia/Kolkata")
+
+# ---------------- Google Sheets Setup ----------------
+service_account_info = json.loads(st.secrets["GSHEET_JSON"])
+scope = ["https://spreadsheets.google.com/feeds","https://www.googleapis.com/auth/drive"]
+creds = ServiceAccountCredentials.from_json_keyfile_dict(service_account_info, scope)
+client = gspread.authorize(creds)
+sheet = client.open("Intraday_Trades").sheet1  # Make sure your sheet name matches
 
 # ---------------- Helper Functions ----------------
 def safe_float(x):
@@ -105,14 +112,24 @@ def plot_chart(df, signal, symbol):
     )
     return fig
 
-# ---------------- Persistence Function ----------------
-def append_order_to_excel(new_order):
-    if os.path.exists(EXCEL_FILE):
-        df_existing = pd.read_excel(EXCEL_FILE)
-        df_full = pd.concat([df_existing, pd.DataFrame([new_order])], ignore_index=True)
-    else:
-        df_full = pd.DataFrame([new_order])
-    df_full.to_excel(EXCEL_FILE, index=False)
+# ---------------- Persistence Function (Google Sheets) ----------------
+def append_order_to_sheet(new_order):
+    existing = sheet.get_all_records()
+    df_existing = pd.DataFrame(existing)
+    # Avoid duplicate open orders
+    if not df_existing.empty and ((df_existing['Symbol'] == new_order['Symbol']) & (df_existing['Status'] == 'Open')).any():
+        return False
+    sheet.append_row([
+        new_order['Timestamp'],
+        new_order['Symbol'],
+        new_order['Signal'],
+        new_order['Qty'],
+        new_order['Entry Price'],
+        new_order['Stop-Loss'],
+        new_order['Target'],
+        new_order['Status']
+    ])
+    return True
 
 # ---------------- Streamlit App ----------------
 st.set_page_config(page_title="AI Intraday Scanner with Paper Trading", layout="wide")
@@ -179,14 +196,7 @@ if not df_watch.empty:
         cols[5].write(row['Qty'])
         cols[6].write(row['Strength'])
         btn_label = "🟢 BUY" if row['Signal'] == 'BUY' else "🔴 SELL"
-        btn_type = "primary" if row['Signal'] == 'BUY' else "secondary"
-        if cols[7].button(btn_label, key=f"papertrade_{i}_{row['Symbol']}", type=btn_type):
-            # Check if order already exists in Excel to avoid duplicates
-            if os.path.exists(EXCEL_FILE):
-                df_existing = pd.read_excel(EXCEL_FILE)
-                if ((df_existing['Symbol'] == row['Symbol']) & (df_existing['Status'] == 'Open')).any():
-                    st.warning(f"⚠️ Open paper order already exists for {row['Symbol']}")
-                    continue
+        if cols[7].button(btn_label, key=f"papertrade_{i}_{row['Symbol']}"):
             paper_order = {
                 'Timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                 'Symbol': row['Symbol'],
@@ -197,9 +207,12 @@ if not df_watch.empty:
                 'Target': row['Target (1%)'],
                 'Status': 'Open'
             }
-            append_order_to_excel(paper_order)
-            st.success(f"📝 Paper order placed for {row['Symbol']}")
-            st.info(f"📌 Stop-Loss: ₹{row['Stop-Loss']} | Target: ₹{row['Target (1%)']}")
+            success = append_order_to_sheet(paper_order)
+            if success:
+                st.success(f"📝 Paper order placed for {row['Symbol']}")
+                st.info(f"📌 Stop-Loss: ₹{row['Stop-Loss']} | Target: ₹{row['Target (1%)']}")
+            else:
+                st.warning(f"⚠️ Open paper order already exists for {row['Symbol']}")
 
     st.subheader("📈 Top Signal Chart")
     top1 = df_watch.iloc[0]
