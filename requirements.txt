@@ -13,4 +13,13 @@ pytz
 openpyxl
 xlsxwriter
 gspread
+streamlit
+yfinance
+pandas
+numpy
+pytz
+plotly
+gspread
+oauth2client
+
 
