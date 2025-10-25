@@ -4,3 +4,12 @@ plotly
 pandas
 numpy
 pytz
+streamlit
+pandas
+numpy
+yfinance
+plotly
+pytz
+openpyxl
+xlsxwriter
+
