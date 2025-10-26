@@ -5,22 +5,49 @@ import pytz
 from datetime import datetime
 import streamlit as st
 import plotly.graph_objects as go
-import json
-import gspread
-from oauth2client.service_account import ServiceAccountCredentials
+import psycopg2
+import os
+
+# ---------------- DATABASE CONFIG ----------------
+DB_CONFIG = {
+    "host": "db.feaxilpzufmdvpmkuakb.supabase.co",
+    "port": 5432,
+    "database": "postgres",
+    "user": "postgres",
+    "password": "56474"
+}
+
+def get_connection():
+    return psycopg2.connect(**DB_CONFIG)
+
+def init_db():
+    """Create table if not exists"""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS paper_trades (
+            id SERIAL PRIMARY KEY,
+            timestamp TIMESTAMPTZ DEFAULT NOW(),
+            symbol TEXT,
+            signal TEXT,
+            qty INT,
+            entry_price FLOAT,
+            stop_loss FLOAT,
+            target FLOAT,
+            status TEXT
+        );
+    """)
+    conn.commit()
+    cur.close()
+    conn.close()
+
+init_db()
 
 # ---------------- Constants ----------------
 RISK_PERCENTAGE = 0.5  # % of account per trade
 STOP_MULTIPLIER = 1.5  # ATR multiple for stop-loss
 TARGET_PCT = 0.01      # 1% profit target
 TIMEZONE = pytz.timezone("Asia/Kolkata")
-
-# ---------------- Google Sheets Setup ----------------
-service_account_info = json.loads(st.secrets["GSHEET_JSON"])
-scope = ["https://spreadsheets.google.com/feeds","https://www.googleapis.com/auth/drive"]
-creds = ServiceAccountCredentials.from_json_keyfile_dict(service_account_info, scope)
-client = gspread.authorize(creds)
-sheet = client.open("Intraday_Trades").sheet1  # Make sure your sheet name matches
 
 # ---------------- Helper Functions ----------------
 def safe_float(x):
@@ -95,15 +122,6 @@ def plot_chart(df, signal, symbol):
             textposition='top center' if signal=='BUY' else 'bottom center',
             name='Signal'
         ))
-    fig.add_trace(go.Scatter(
-        x=[df.index[-1]],
-        y=[latest_price],
-        mode='markers+text',
-        marker=dict(symbol='circle', color='yellow', size=10),
-        text=[df.index[-1].strftime("%H:%M:%S")],
-        textposition='bottom center',
-        name='Latest Time'
-    ))
     fig.update_layout(
         title=f"{symbol} — Last Data: {latest_time_str}",
         template='plotly_dark',
@@ -112,37 +130,49 @@ def plot_chart(df, signal, symbol):
     )
     return fig
 
-# ---------------- Persistence Function (Google Sheets) ----------------
-def append_order_to_sheet(new_order):
-    existing = sheet.get_all_records()
-    df_existing = pd.DataFrame(existing)
-    # Avoid duplicate open orders
-    if not df_existing.empty and ((df_existing['Symbol'] == new_order['Symbol']) & (df_existing['Status'] == 'Open')).any():
-        return False
-    sheet.append_row([
-        new_order['Timestamp'],
-        new_order['Symbol'],
-        new_order['Signal'],
-        new_order['Qty'],
-        new_order['Entry Price'],
-        new_order['Stop-Loss'],
-        new_order['Target'],
-        new_order['Status']
-    ])
-    return True
+# ---------------- Database Insert Function ----------------
+def insert_order(order):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        INSERT INTO paper_trades (symbol, signal, qty, entry_price, stop_loss, target, status)
+        VALUES (%s, %s, %s, %s, %s, %s, %s);
+    """, (
+        order['Symbol'],
+        order['Signal'],
+        order['Qty'],
+        order['Entry Price'],
+        order['Stop-Loss'],
+        order['Target'],
+        order['Status']
+    ))
+    conn.commit()
+    cur.close()
+    conn.close()
+
+def order_exists(symbol):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT COUNT(*) FROM paper_trades WHERE symbol = %s AND status = 'OPEN';", (symbol,))
+    count = cur.fetchone()[0]
+    cur.close()
+    conn.close()
+    return count > 0
 
 # ---------------- Streamlit App ----------------
-st.set_page_config(page_title="AI Intraday Scanner with Paper Trading", layout="wide")
-st.title("📈 AI Intraday Nifty50 Scanner (Real-time with Paper Trading)")
-st.caption("EMA8 / EMA21 + VWAP Scanner — Educational Use Only")
+st.set_page_config(page_title="AI Intraday Scanner (Postgres)", layout="wide")
+st.title("📈 AI Intraday Nifty50 Scanner — Postgres Version")
+st.caption("EMA8 / EMA21 + VWAP Scanner with Cloud Database (Supabase)")
 
 account_balance = st.number_input("Account Size (₹)", value=100000.0, step=5000.0)
 
 if st.button("Run Scanner"):
-    symbols = ['RELIANCE.NS', 'INFY.NS', 'TCS.NS', 'HDFCBANK.NS', 'ICICIBANK.NS',
-               'SBIN.NS', 'LT.NS', 'AXISBANK.NS', 'ITC.NS', 'ONGC.NS', 'HINDUNILVR.NS',
-               'MARUTI.NS', 'BHARTIARTL.NS', 'BAJFINANCE.NS', 'ASIANPAINT.NS',
-               'TECHM.NS', 'KOTAKBANK.NS', 'ULTRACEMCO.NS', 'HCLTECH.NS', 'ADANIPORTS.NS']
+    symbols = [
+        'RELIANCE.NS', 'INFY.NS', 'TCS.NS', 'HDFCBANK.NS', 'ICICIBANK.NS',
+        'SBIN.NS', 'LT.NS', 'AXISBANK.NS', 'ITC.NS', 'ONGC.NS', 'HINDUNILVR.NS',
+        'MARUTI.NS', 'BHARTIARTL.NS', 'BAJFINANCE.NS', 'ASIANPAINT.NS',
+        'TECHM.NS', 'KOTAKBANK.NS', 'ULTRACEMCO.NS', 'HCLTECH.NS', 'ADANIPORTS.NS'
+    ]
     watchlist = []
     for symbol in symbols:
         df = fetch_data(symbol)
@@ -170,8 +200,7 @@ if st.button("Run Scanner"):
                 'Qty': qty,
                 'Strength': round(strength,4)
             })
-    df_watch = pd.DataFrame(watchlist)
-    st.session_state.df_watch = df_watch
+    st.session_state.df_watch = pd.DataFrame(watchlist)
 
 df_watch = st.session_state.df_watch if 'df_watch' in st.session_state else pd.DataFrame()
 if not df_watch.empty:
@@ -197,22 +226,21 @@ if not df_watch.empty:
         cols[6].write(row['Strength'])
         btn_label = "🟢 BUY" if row['Signal'] == 'BUY' else "🔴 SELL"
         if cols[7].button(btn_label, key=f"papertrade_{i}_{row['Symbol']}"):
+            if order_exists(row['Symbol']):
+                st.warning(f"⚠️ Open paper order already exists for {row['Symbol']}")
+                continue
             paper_order = {
-                'Timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                 'Symbol': row['Symbol'],
                 'Signal': row['Signal'],
                 'Qty': row['Qty'],
                 'Entry Price': row['Price'],
                 'Stop-Loss': row['Stop-Loss'],
                 'Target': row['Target (1%)'],
-                'Status': 'Open'
+                'Status': 'OPEN'
             }
-            success = append_order_to_sheet(paper_order)
-            if success:
-                st.success(f"📝 Paper order placed for {row['Symbol']}")
-                st.info(f"📌 Stop-Loss: ₹{row['Stop-Loss']} | Target: ₹{row['Target (1%)']}")
-            else:
-                st.warning(f"⚠️ Open paper order already exists for {row['Symbol']}")
+            insert_order(paper_order)
+            st.success(f"📝 Paper order placed for {row['Symbol']}")
+            st.info(f"📌 Stop-Loss: ₹{row['Stop-Loss']} | Target: ₹{row['Target (1%)']}")
 
     st.subheader("📈 Top Signal Chart")
     top1 = df_watch.iloc[0]
