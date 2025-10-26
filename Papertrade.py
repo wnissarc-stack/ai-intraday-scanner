@@ -14,7 +14,7 @@ DB_CONFIG = {
     "port": 5432,
     "database": "postgres",
     "user": "postgres",
-    "password": "12345"
+    "password": "LkhWzJ2lxcEv9o6C"
 }
 
 def get_connection():
@@ -251,4 +251,5 @@ if not df_watch.empty:
     st.plotly_chart(plot_chart(df_top.tail(200), top1['Signal'], top1['Symbol']), use_container_width=True)
 else:
     st.info("Please click 'Run Scanner' to start.")
+
 
