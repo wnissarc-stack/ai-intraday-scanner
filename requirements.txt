@@ -21,5 +21,14 @@ pytz
 plotly
 gspread
 oauth2client
+streamlit
+pandas
+yfinance
+plotly
+numpy
+pytz
+psycopg2-binary
+
+
 
 
